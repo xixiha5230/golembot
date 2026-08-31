@@ -1,4 +1,4 @@
-import type { ChannelAdapter, ChannelMessage, ImageAttachment, ReplyOptions } from '../channel.js';
+import type { ChannelAdapter, ChannelMessage, ImageAttachment, OutboundMedia, ReplyOptions } from '../channel.js';
 import { importPeer } from '../peer-require.js';
 import type { TelegramChannelConfig } from '../workspace.js';
 import { markdownToHtml } from './telegram-format.js';
@@ -20,6 +20,7 @@ export class TelegramAdapter implements ChannelAdapter {
   readonly maxMessageLength = 4096;
   private config: TelegramChannelConfig;
   private bot: any;
+  private inputFileCtor: any;
   private botUsername: string | undefined;
   private seenMsgIds = new Set<string>();
   private static readonly MAX_SEEN = 500;
@@ -36,8 +37,9 @@ export class TelegramAdapter implements ChannelAdapter {
       throw new Error('Telegram adapter requires grammy. Install it: npm install grammy');
     }
 
-    const { Bot } = grammyModule;
+    const { Bot, InputFile } = grammyModule;
     this.bot = new Bot(this.config.botToken);
+    this.inputFileCtor = InputFile;
 
     // Fetch bot username for group mention detection
     const me = await this.bot.api.getMe();
@@ -143,6 +145,44 @@ export class TelegramAdapter implements ChannelAdapter {
       mode: 'html',
       purpose: 'send',
     });
+  }
+
+  async sendMedia(msg: ChannelMessage, media: OutboundMedia): Promise<void> {
+    if (!this.bot || !this.inputFileCtor) return;
+
+    const minSize = 5;
+    if (media.data.length < minSize) {
+      throw new Error(`Media too small: file is ${media.data.length} bytes, minimum is ${minSize} bytes`);
+    }
+
+    const maxSize = media.kind === 'image' ? 10 * 1024 * 1024 : 20 * 1024 * 1024;
+    if (media.data.length > maxSize) {
+      const kindLabel = media.kind === 'image' ? 'image' : 'file';
+      const maxMB = media.kind === 'image' ? 10 : 20;
+      throw new Error(
+        `Media too large: ${kindLabel} is ${(media.data.length / (1024 * 1024)).toFixed(1)}MB, maximum is ${maxMB}MB`,
+      );
+    }
+
+    const filename = media.fileName ?? (media.kind === 'image' ? 'image.jpg' : 'attachment.bin');
+    const input = new this.inputFileCtor(media.data, filename);
+    const sendOptions: Record<string, unknown> = {};
+    const replyToMessageId = parseTelegramMessageId(msg.messageId);
+    if (replyToMessageId !== undefined) sendOptions.reply_to_message_id = replyToMessageId;
+
+    try {
+      if (media.kind === 'image') {
+        await this.bot.api.sendPhoto(Number(msg.chatId), input, sendOptions);
+      } else {
+        await this.bot.api.sendDocument(Number(msg.chatId), input, sendOptions);
+      }
+    } catch (e) {
+      const reason = describeTelegramError(e);
+      console.warn(
+        `[telegram] sendMedia failed chat=${msg.chatId} kind=${media.kind} filename=${filename} reason=${reason}`,
+      );
+      throw new Error(`Failed to send ${media.kind}: ${reason}`);
+    }
   }
 
   async sendStatus(msg: ChannelMessage, text: string): Promise<string> {
