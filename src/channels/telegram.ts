@@ -166,22 +166,33 @@ export class TelegramAdapter implements ChannelAdapter {
 
     const filename = media.fileName ?? (media.kind === 'image' ? 'image.jpg' : 'attachment.bin');
     const input = new this.inputFileCtor(media.data, filename);
-    const sendOptions: Record<string, unknown> = {};
-    const replyToMessageId = parseTelegramMessageId(msg.messageId);
+    let sendOptions: Record<string, unknown> = {};
+    let replyToMessageId = parseTelegramMessageId(msg.messageId);
     if (replyToMessageId !== undefined) sendOptions.reply_to_message_id = replyToMessageId;
 
-    try {
-      if (media.kind === 'image') {
-        await this.bot.api.sendPhoto(Number(msg.chatId), input, sendOptions);
-      } else {
-        await this.bot.api.sendDocument(Number(msg.chatId), input, sendOptions);
+    while (true) {
+      try {
+        if (media.kind === 'image') {
+          await this.bot.api.sendPhoto(Number(msg.chatId), input, sendOptions);
+        } else {
+          await this.bot.api.sendDocument(Number(msg.chatId), input, sendOptions);
+        }
+        return;
+      } catch (e) {
+        if (replyToMessageId !== undefined && isTelegramReplyTargetError(e)) {
+          console.warn(
+            `[telegram] sendMedia fallback=no-reply chat=${msg.chatId} kind=${media.kind} filename=${filename} reason=${describeTelegramError(e)}`,
+          );
+          replyToMessageId = undefined;
+          sendOptions = {};
+          continue;
+        }
+        const reason = describeTelegramError(e);
+        console.warn(
+          `[telegram] sendMedia failed chat=${msg.chatId} kind=${media.kind} filename=${filename} reason=${reason}`,
+        );
+        throw new Error(`Failed to send ${media.kind}: ${reason}`);
       }
-    } catch (e) {
-      const reason = describeTelegramError(e);
-      console.warn(
-        `[telegram] sendMedia failed chat=${msg.chatId} kind=${media.kind} filename=${filename} reason=${reason}`,
-      );
-      throw new Error(`Failed to send ${media.kind}: ${reason}`);
     }
   }
 

@@ -200,6 +200,31 @@ describe('TelegramAdapter sendMedia', () => {
     expect(options).toEqual({ reply_to_message_id: 7 });
   });
 
+  it('retries without reply metadata when the reply target is stale', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const api = {
+      sendPhoto: vi
+        .fn()
+        .mockRejectedValueOnce({
+          error_code: 400,
+          description: 'Bad Request: replied message not found',
+        })
+        .mockResolvedValueOnce({ message_id: 205 }),
+    };
+    const adapter = makeAdapter(api);
+
+    await adapter.sendMedia(makeMsg(), {
+      kind: 'image',
+      data: Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]),
+      fileName: 'cam0.jpg',
+    });
+
+    expect(api.sendPhoto).toHaveBeenCalledTimes(2);
+    expect(api.sendPhoto.mock.calls[0][2]).toEqual({ reply_to_message_id: 7 });
+    expect(api.sendPhoto.mock.calls[1][2]).toEqual({});
+    expect(warnSpy.mock.calls.join(' ')).toContain('fallback=no-reply');
+  });
+
   it('falls back to default filenames when none is provided', async () => {
     const api = {
       sendPhoto: vi.fn().mockResolvedValue({ message_id: 203 }),
